@@ -1,0 +1,7 @@
+2026-08-28T18:45:35 host sudo: pam_unix(sudo:auth): authentication failure; user=testuser
+2026-08-28T18:45:37 host sudo: pam_unix(sudo:auth): authentication failure; user=testuser
+2026-08-28T18:45:39 host sudo: pam_unix(sudo:auth): authentication failure; user=testuser
+2026-08-28T18:45:41 host sudo: pam_unix(sudo:auth): authentication failure; user=testuser
+2026-08-28T18:45:43 host sudo: pam_unix(sudo:auth): authentication failure; user=testuser
+2026-08-28T18:45:45 host sudo: pam_unix(sudo:session): session opened for user testuser(uid=1000) by testuser(uid=0)
+2026-08-28T03:15:00 host login: pam_unix(login:session): session opened for user nightowl(uid=1000) by nightowl(uid=0)

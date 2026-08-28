@@ -1,0 +1,6 @@
+*.log
+*.csv
+.env
+__pycache__/
+*.pyc
+!sample_auth.log
