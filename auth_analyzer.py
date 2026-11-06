@@ -34,7 +34,8 @@ OFF_HOURS = range(0, 6)      # 12am-6am counts as "off hours"
 TS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})')
 
 FAILURE_MARKERS = ("authentication failure", "Failed password")
-SUCCESS_MARKERS = ("session opened", "Accepted password")
+SUCCESS_MARKERS = ("session opened", "Accepted password", "Accepted publickey",
+                   "Accepted keyboard-interactive")
 
 # Usernames can contain dots, hyphens, and @ (e.g. john.doe, svc-backup,
 # user@domain for AD-joined hosts), so \w+ is not enough.
