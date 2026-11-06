@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import json
 import re
 import sys
 from collections import defaultdict, deque, namedtuple
@@ -26,7 +27,8 @@ from datetime import datetime, timedelta
 # --- Configuration defaults -------------------------------------------------
 DEFAULT_THRESHOLD = 5        # failures needed to call it a brute-force
 DEFAULT_WINDOW_SECONDS = 120 # ...within this many seconds
-OFF_HOURS = range(0, 6)      # 12am-6am counts as "off hours"
+DEFAULT_OFF_HOURS = "0-6"    # 12am to 6am counts as "off hours"
+DEFAULT_MIN_PRIOR_FAILS = 3  # failures before a success to flag a breach
 
 # --- Log parsing ------------------------------------------------------------
 # Matches ISO-style timestamps used by this system's rsyslog, e.g.
@@ -195,16 +197,43 @@ def detect_success_after_failures(events, min_prior_fails=3, window_seconds=120)
     return alerts
 
 
-def detect_off_hours(events):
+def parse_hours(spec):
+    """Turn "0-6" into hours {0..5}. Wraps past midnight: "22-6" is 22..5."""
+    try:
+        start, end = (int(x) for x in spec.split("-"))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected START-END, got {spec!r}")
+    if not (0 <= start <= 23 and 0 <= end <= 24):
+        raise argparse.ArgumentTypeError("hours must be between 0 and 24")
+    if start < end:
+        return set(range(start, end))
+    return set(range(start, 24)) | set(range(0, end))
+
+
+def detect_off_hours(events, hours=None):
+    hours = parse_hours(DEFAULT_OFF_HOURS) if hours is None else hours
     alerts = []
     for ev in events:
-        if ev.kind == "SUCCESS" and ev.ts.hour in OFF_HOURS:
+        if ev.kind == "SUCCESS" and ev.ts.hour in hours:
             alerts.append({"user": ev.user, "ip": ev.ip, "time": ev.ts})
     return alerts
 
 
 # --- Reporting --------------------------------------------------------------
-def report(events, bf, breach, offh):
+def to_json(events, bf, breach, offh):
+    """Serialize results for a SIEM, a script, or another tool."""
+    def clean(alerts):
+        return [{k: (v.isoformat() if isinstance(v, datetime) else v)
+                 for k, v in a.items()} for a in alerts]
+    return json.dumps({
+        "events_parsed": len(events),
+        "bruteforce": clean(bf),
+        "success_after_failures": clean(breach),
+        "off_hours": clean(offh),
+    }, indent=2)
+
+
+def report(events, bf, breach, offh, off_hours_label=DEFAULT_OFF_HOURS):
     print("=" * 62)
     print("  AUTH LOG SECURITY ANALYSIS")
     print("=" * 62)
@@ -228,7 +257,7 @@ def report(events, bf, breach, offh):
         print(f"  ! user '{a['user']}': login succeeded{src} after "
               f"{a['prior_fails']} failures  at {a['success_time']}")
 
-    print(f"\n[3] OFF-HOURS LOGINS (12am-6am): {len(offh)}")
+    print(f"\n[3] OFF-HOURS LOGINS (hours {off_hours_label}): {len(offh)}")
     for a in offh:
         src = f" from {a['ip']}" if a["ip"] else ""
         print(f"  - user '{a['user']}'{src} at {a['time']}")
@@ -242,29 +271,56 @@ def report(events, bf, breach, offh):
     print("=" * 62)
 
 
-def main():
+def parse_args(argv=None):
     ap = argparse.ArgumentParser(description="Detect brute-force and suspicious logins in an auth log.")
     ap.add_argument("--file", default="/var/log/auth.log", help="path to auth log")
     ap.add_argument("--threshold", type=int, default=DEFAULT_THRESHOLD,
-                    help="failures to flag as brute-force")
+                    help="failures to flag as brute-force (default: %(default)s)")
     ap.add_argument("--window", type=int, default=DEFAULT_WINDOW_SECONDS,
-                    help="time window in seconds")
+                    help="time window in seconds (default: %(default)s)")
+    ap.add_argument("--min-prior-fails", type=int, default=DEFAULT_MIN_PRIOR_FAILS,
+                    help="failures before a success that count as a possible "
+                         "breach (default: %(default)s)")
+    ap.add_argument("--off-hours", default=DEFAULT_OFF_HOURS, type=str,
+                    help="off-hours range as START-END in 24h time, may wrap "
+                         "midnight, e.g. 22-6 (default: %(default)s)")
     ap.add_argument("--year", type=int,
                     help="year for traditional syslog timestamps, which omit it "
                          "(default: current year)")
-    args = ap.parse_args()
+    ap.add_argument("--json", action="store_true",
+                    help="print results as JSON instead of the text report")
+    ap.add_argument("--exit-code", action="store_true",
+                    help="exit with status 1 if any brute-force or breach "
+                         "alert is raised (useful in scripts and cron jobs)")
+    args = ap.parse_args(argv)
+    try:
+        args.off_hours_set = parse_hours(args.off_hours)
+    except argparse.ArgumentTypeError as e:
+        ap.error(str(e))
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
 
     events = load_events(args.file, args.year)
-    if not events:
+    if not events and not args.json:
         print("No auth events found. Is the log path correct and readable?")
-        return
+        return 0
 
     bf = (detect_bruteforce(events, args.threshold, args.window, by="user")
           + detect_bruteforce(events, args.threshold, args.window, by="ip"))
-    breach = detect_success_after_failures(events, window_seconds=args.window)
-    offh = detect_off_hours(events)
-    report(events, bf, breach, offh)
+    breach = detect_success_after_failures(
+        events, min_prior_fails=args.min_prior_fails, window_seconds=args.window)
+    offh = detect_off_hours(events, args.off_hours_set)
+
+    if args.json:
+        print(to_json(events, bf, breach, offh))
+    else:
+        report(events, bf, breach, offh, args.off_hours)
+
+    return 1 if args.exit_code and (bf or breach) else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
