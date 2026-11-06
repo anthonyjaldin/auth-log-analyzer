@@ -32,6 +32,10 @@ OFF_HOURS = range(0, 6)      # 12am-6am counts as "off hours"
 # Matches ISO-style timestamps used by this system's rsyslog, e.g.
 # 2026-08-28T18:45:35.490209-04:00 anthony sudo: pam_unix(sudo:auth): ...
 TS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})')
+# Traditional syslog format (Debian/Ubuntu defaults, CentOS /var/log/secure):
+# Nov  5 14:02:12 web1 sshd[900]: Failed password for ...
+# This format has no year, so the caller supplies one.
+SYSLOG_TS_RE = re.compile(r'^([A-Z][a-z]{2}\s+\d{1,2} \d{2}:\d{2}:\d{2})')
 
 FAILURE_MARKERS = ("authentication failure", "Failed password")
 SUCCESS_MARKERS = ("session opened", "Accepted password", "Accepted publickey",
@@ -46,14 +50,24 @@ SSHD_USER_RE = re.compile(r'(?:Failed|Accepted) \S+ for (?:invalid user )?' + NA
 SESSION_USER_RE = re.compile(r'session opened for user ' + NAME)
 
 
-def parse_timestamp(line):
+def parse_timestamp(line, year=None):
+    """Parse an ISO 8601 or traditional syslog timestamp at line start."""
     m = TS_RE.match(line)
-    if not m:
-        return None
-    try:
-        return datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S")
-    except ValueError:
-        return None
+    if m:
+        try:
+            return datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return None
+    m = SYSLOG_TS_RE.match(line)
+    if m:
+        year = year or datetime.now().year
+        # collapse the double space syslog uses before single-digit days
+        stamp = " ".join(m.group(1).split())
+        try:
+            return datetime.strptime(f"{year} {stamp}", "%Y %b %d %H:%M:%S")
+        except ValueError:
+            return None
+    return None
 
 
 def extract_user(line):
@@ -85,7 +99,7 @@ def classify(line):
     return None
 
 
-def load_events(path):
+def load_events(path, year=None):
     events = []
     try:
         with open(path, "r", errors="ignore") as f:
@@ -93,7 +107,7 @@ def load_events(path):
                 kind = classify(line)
                 if not kind:
                     continue
-                ts = parse_timestamp(line)
+                ts = parse_timestamp(line, year)
                 if not ts:
                     continue
                 events.append((ts, kind, extract_user(line)))
@@ -206,9 +220,12 @@ def main():
                     help="failures to flag as brute-force")
     ap.add_argument("--window", type=int, default=DEFAULT_WINDOW_SECONDS,
                     help="time window in seconds")
+    ap.add_argument("--year", type=int,
+                    help="year for traditional syslog timestamps, which omit it "
+                         "(default: current year)")
     args = ap.parse_args()
 
-    events = load_events(args.file)
+    events = load_events(args.file, args.year)
     if not events:
         print("No auth events found. Is the log path correct and readable?")
         return
