@@ -1,0 +1,12 @@
+2026-11-05T02:17:01.123456-05:00 web1 CRON[4411]: pam_unix(cron:session): session opened for user root(uid=0) by root(uid=0)
+2026-11-05T14:02:10.000000-05:00 web1 sshd[900]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.9  user=deploy
+2026-11-05T14:02:12.000000-05:00 web1 sshd[900]: Failed password for deploy from 203.0.113.9 port 51022 ssh2
+2026-11-05T14:02:15.000000-05:00 web1 sshd[900]: Failed password for deploy from 203.0.113.9 port 51022 ssh2
+2026-11-05T14:02:18.000000-05:00 web1 sshd[901]: Accepted publickey for deploy from 203.0.113.9 port 51030 ssh2: ED25519 SHA256:abc
+2026-11-05T14:02:18.100000-05:00 web1 sshd[901]: pam_unix(sshd:session): session opened for user deploy(uid=1001) by (uid=0)
+2026-11-05T14:05:01.000000-05:00 web1 sshd[950]: Failed password for invalid user admin from 198.51.100.7 port 4000 ssh2
+2026-11-05T14:05:03.000000-05:00 web1 sshd[951]: Failed password for invalid user oracle from 198.51.100.7 port 4001 ssh2
+2026-11-05T14:05:05.000000-05:00 web1 sshd[952]: Failed password for invalid user test from 198.51.100.7 port 4002 ssh2
+2026-11-05T14:05:07.000000-05:00 web1 sshd[953]: Failed password for invalid user ubuntu from 198.51.100.7 port 4003 ssh2
+2026-11-05T14:05:09.000000-05:00 web1 sshd[954]: Failed password for invalid user postgres from 198.51.100.7 port 4004 ssh2
+2026-11-05T14:05:11.000000-05:00 web1 sshd[955]: Failed password for invalid user git from 198.51.100.7 port 4005 ssh2

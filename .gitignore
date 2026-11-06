@@ -4,3 +4,5 @@
 __pycache__/
 *.pyc
 !sample_auth.log
+# Synthetic test fixtures (RFC 5737 documentation IPs, no real data)
+!tests/fixtures/*.log
