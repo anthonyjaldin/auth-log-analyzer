@@ -36,9 +36,13 @@ TS_RE = re.compile(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})')
 FAILURE_MARKERS = ("authentication failure", "Failed password")
 SUCCESS_MARKERS = ("session opened", "Accepted password")
 
-USER_RE = re.compile(r'user=(\w+)')
-FAILED_FOR_RE = re.compile(r'Failed password for (?:invalid user )?(\w+)')
-SESSION_USER_RE = re.compile(r'session opened for user (\w+)')
+# Usernames can contain dots, hyphens, and @ (e.g. john.doe, svc-backup,
+# user@domain for AD-joined hosts), so \w+ is not enough.
+NAME = r'([\w.@-]+)'
+# \b so that "ruser=" (the requesting user) is not mistaken for "user="
+USER_RE = re.compile(r'\buser=' + NAME)
+SSHD_USER_RE = re.compile(r'(?:Failed|Accepted) \S+ for (?:invalid user )?' + NAME)
+SESSION_USER_RE = re.compile(r'session opened for user ' + NAME)
 
 
 def parse_timestamp(line):
@@ -52,7 +56,7 @@ def parse_timestamp(line):
 
 
 def extract_user(line):
-    for rx in (USER_RE, FAILED_FOR_RE, SESSION_USER_RE):
+    for rx in (SSHD_USER_RE, USER_RE, SESSION_USER_RE):
         m = rx.search(line)
         if m:
             return m.group(1)
