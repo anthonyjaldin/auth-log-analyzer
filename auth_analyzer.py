@@ -20,7 +20,7 @@ Usage:
 import argparse
 import re
 import sys
-from collections import defaultdict
+from collections import defaultdict, deque, namedtuple
 from datetime import datetime, timedelta
 
 # --- Configuration defaults -------------------------------------------------
@@ -48,6 +48,10 @@ NAME = r'([\w.@-]+)'
 USER_RE = re.compile(r'\buser=' + NAME)
 SSHD_USER_RE = re.compile(r'(?:Failed|Accepted) \S+ for (?:invalid user )?' + NAME)
 SESSION_USER_RE = re.compile(r'session opened for user ' + NAME)
+# Source address: sshd writes "from 203.0.113.9 port", PAM writes "rhost=..."
+IP_RE = re.compile(r'(?:\bfrom |\brhost=)([0-9A-Fa-f.:]+)')
+
+Event = namedtuple("Event", "ts kind user ip")
 
 
 def parse_timestamp(line, year=None):
@@ -89,6 +93,11 @@ DUPLICATE_SOURCES = ("pam_unix(sshd:",)
 SYSTEM_SESSION_SOURCES = ("pam_unix(cron:session)", "pam_unix(systemd-user:session)")
 
 
+def extract_ip(line):
+    m = IP_RE.search(line)
+    return m.group(1) if m and any(c.isdigit() for c in m.group(1)) else None
+
+
 def classify(line):
     if any(src in line for src in DUPLICATE_SOURCES + SYSTEM_SESSION_SOURCES):
         return None
@@ -110,40 +119,54 @@ def load_events(path, year=None):
                 ts = parse_timestamp(line, year)
                 if not ts:
                     continue
-                events.append((ts, kind, extract_user(line)))
+                events.append(Event(ts, kind, extract_user(line), extract_ip(line)))
     except FileNotFoundError:
         print(f"ERROR: log file not found: {path}")
         sys.exit(1)
     except PermissionError:
         print(f"ERROR: no permission to read {path}. Try: sudo python3 {sys.argv[0]}")
         sys.exit(1)
-    events.sort(key=lambda e: e[0])
+    events.sort(key=lambda e: e.ts)
     return events
 
 
 # --- Detection --------------------------------------------------------------
-def detect_bruteforce(events, threshold, window_seconds):
-    """Sliding window per user: alert when failures >= threshold within window."""
+def detect_bruteforce(events, threshold, window_seconds, by="user"):
+    """Sliding window: alert when failures >= threshold within window.
+
+    by="user" groups failures per account (password guessing against one
+    user). by="ip" groups them per source address, which catches password
+    spraying, where one host tries many different usernames.
+    """
     window = timedelta(seconds=window_seconds)
-    fails_by_user = defaultdict(list)
+    fails = defaultdict(deque)
+    alerting = set()   # keys currently above threshold (alert once per burst)
     alerts = []
 
-    for ts, kind, user in events:
-        if kind != "FAIL":
+    for ev in events:
+        if ev.kind != "FAIL":
             continue
-        bucket = fails_by_user[user]
-        bucket.append(ts)
+        key = getattr(ev, by)
+        if key is None:
+            continue
+        bucket = fails[key]
+        bucket.append(ev)
         # drop failures older than the window
-        cutoff = ts - window
-        while bucket and bucket[0] < cutoff:
-            bucket.pop(0)
-        if len(bucket) == threshold:  # fire once, when threshold is first hit
+        cutoff = ev.ts - window
+        while bucket and bucket[0].ts < cutoff:
+            bucket.popleft()
+        if len(bucket) < threshold:
+            alerting.discard(key)
+        elif key not in alerting:
+            alerting.add(key)
             alerts.append({
-                "user": user,
+                "by": by,
+                "key": key,
                 "count": len(bucket),
-                "start": bucket[0],
-                "end": ts,
+                "start": bucket[0].ts,
+                "end": ev.ts,
                 "window_s": window_seconds,
+                "users": sorted({e.user for e in bucket}),
             })
     return alerts
 
@@ -151,21 +174,22 @@ def detect_bruteforce(events, threshold, window_seconds):
 def detect_success_after_failures(events, min_prior_fails=3, window_seconds=120):
     """Flag a success that follows >= min_prior_fails failures for the same user."""
     window = timedelta(seconds=window_seconds)
-    recent_fails = defaultdict(list)
+    recent_fails = defaultdict(deque)
     alerts = []
 
-    for ts, kind, user in events:
-        cutoff = ts - window
-        bucket = recent_fails[user]
+    for ev in events:
+        cutoff = ev.ts - window
+        bucket = recent_fails[ev.user]
         while bucket and bucket[0] < cutoff:
-            bucket.pop(0)
-        if kind == "FAIL":
-            bucket.append(ts)
-        elif kind == "SUCCESS" and len(bucket) >= min_prior_fails:
+            bucket.popleft()
+        if ev.kind == "FAIL":
+            bucket.append(ev.ts)
+        elif ev.kind == "SUCCESS" and len(bucket) >= min_prior_fails:
             alerts.append({
-                "user": user,
+                "user": ev.user,
+                "ip": ev.ip,
                 "prior_fails": len(bucket),
-                "success_time": ts,
+                "success_time": ev.ts,
             })
             bucket.clear()
     return alerts
@@ -173,9 +197,9 @@ def detect_success_after_failures(events, min_prior_fails=3, window_seconds=120)
 
 def detect_off_hours(events):
     alerts = []
-    for ts, kind, user in events:
-        if kind == "SUCCESS" and ts.hour in OFF_HOURS:
-            alerts.append({"user": user, "time": ts})
+    for ev in events:
+        if ev.kind == "SUCCESS" and ev.ts.hour in OFF_HOURS:
+            alerts.append({"user": ev.user, "ip": ev.ip, "time": ev.ts})
     return alerts
 
 
@@ -191,18 +215,23 @@ def report(events, bf, breach, offh):
     print(f"\n[1] BRUTE-FORCE ALERTS: {len(bf)}")
     for a in bf:
         span = (a["end"] - a["start"]).total_seconds()
-        print(f"  ! user '{a['user']}': {a['count']} failures in {span:.0f}s "
+        label = "user" if a["by"] == "user" else "source IP"
+        print(f"  ! {label} '{a['key']}': {a['count']} failures in {span:.0f}s "
               f"(window {a['window_s']}s)")
+        if a["by"] == "ip":
+            print(f"      usernames tried: {', '.join(a['users'])}")
         print(f"      first: {a['start']}   last: {a['end']}")
 
     print(f"\n[2] SUCCESS-AFTER-FAILURES (possible breach): {len(breach)}")
     for a in breach:
-        print(f"  ! user '{a['user']}': login succeeded after "
+        src = f" from {a['ip']}" if a["ip"] else ""
+        print(f"  ! user '{a['user']}': login succeeded{src} after "
               f"{a['prior_fails']} failures  at {a['success_time']}")
 
     print(f"\n[3] OFF-HOURS LOGINS (12am-6am): {len(offh)}")
     for a in offh:
-        print(f"  - user '{a['user']}' at {a['time']}")
+        src = f" from {a['ip']}" if a["ip"] else ""
+        print(f"  - user '{a['user']}'{src} at {a['time']}")
 
     print("\n" + "=" * 62)
     total = len(bf) + len(breach)
@@ -230,7 +259,8 @@ def main():
         print("No auth events found. Is the log path correct and readable?")
         return
 
-    bf = detect_bruteforce(events, args.threshold, args.window)
+    bf = (detect_bruteforce(events, args.threshold, args.window, by="user")
+          + detect_bruteforce(events, args.threshold, args.window, by="ip"))
     breach = detect_success_after_failures(events, window_seconds=args.window)
     offh = detect_off_hours(events)
     report(events, bf, breach, offh)
