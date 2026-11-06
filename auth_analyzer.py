@@ -59,7 +59,15 @@ def extract_user(line):
     return "unknown"
 
 
+# sshd writes its own "Failed password" / "Accepted ..." line for every
+# attempt AND a matching pam_unix(sshd:...) line. Counting both would turn
+# one attempt into two, so the pam_unix lines for sshd are skipped.
+DUPLICATE_SOURCES = ("pam_unix(sshd:",)
+
+
 def classify(line):
+    if any(src in line for src in DUPLICATE_SOURCES):
+        return None
     if any(mark in line for mark in FAILURE_MARKERS):
         return "FAIL"
     if any(mark in line for mark in SUCCESS_MARKERS):
