@@ -64,9 +64,14 @@ def extract_user(line):
 # one attempt into two, so the pam_unix lines for sshd are skipped.
 DUPLICATE_SOURCES = ("pam_unix(sshd:",)
 
+# Sessions opened by the system itself, not by a person logging in.
+# cron opens a root session every time a job runs (often overnight), and
+# systemd-user starts a session manager for each real login.
+SYSTEM_SESSION_SOURCES = ("pam_unix(cron:session)", "pam_unix(systemd-user:session)")
+
 
 def classify(line):
-    if any(src in line for src in DUPLICATE_SOURCES):
+    if any(src in line for src in DUPLICATE_SOURCES + SYSTEM_SESSION_SOURCES):
         return None
     if any(mark in line for mark in FAILURE_MARKERS):
         return "FAIL"
